@@ -7,27 +7,23 @@ extends Area2D
 ## - Hotspots + inversion that suppresses recombination in a segment
 ## - Drawn procedural flower petals (including heart petals) + edge styles
 ## - Optional genetics label overlay
+## - Capsule collision auto-scales to match flower genes (size + petals)
 ##
 ## Copy/paste ready. ✅
 ##
-## Scene assumptions (child nodes):
-## - Sprite2D named "Sprite2D"
-## - Timer   named "WanderTimer"
-## - Label   named "SpeciesLabel"
+## Node requirements (children):
+##   - Sprite2D named "Sprite2D"   (can be hidden; used only for optional gradient storage)
+##   - Timer   named "WanderTimer"
+##   - Label   named "SpeciesLabel"
+##   - CollisionShape2D named "CollisionShape2D" with a CapsuleShape2D
 ##
-## Notes:
-## - We draw the flower procedurally in _draw(); the Sprite2D is kept hidden.
-## - The Sprite2D can still hold a GradientTexture2D that we duplicate per instance
-##   so each cell’s gradient can be unique without affecting others.
-## - Spot patterns use stable randomness per instance (seeded RNG) so freckles don't flicker.
-## - Godot 4 note: no nested functions inside functions; no “free-floating” code outside funcs.
-## - Godot 4 note: avoid inline lambdas for signal callbacks (can trigger:
-##   “Standalone lambdas cannot be accessed”). We connect timers to a real method.
+## Inspector checklist is at the end of this message.
 ##
 
 @onready var sprite: Sprite2D = $Sprite2D
 @onready var wander_timer: Timer = $WanderTimer
 @onready var species_label: Label = $SpeciesLabel
+@onready var collision_shape: CollisionShape2D = $CollisionShape2D
 
 signal cell_selected(cell)
 
@@ -45,157 +41,114 @@ var world: Node = null
 func set_world(w: Node) -> void:
 	world = w
 
-
 # ============================================================
 # CHROMOSOMES (2 total): linked loci, per-chromosome lam, hotspots, inversions
 # ============================================================
-##
-## We treat genes as a dictionary. During recombination:
-## - Genes on each chromosome are linked by position (0..1).
-## - Crossovers occur with a Poisson(lam) number of cuts.
-## - Hotspots/coldspots weight where cuts are likely.
-## - An inversion can suppress crossovers in a span when parents differ.
-##
-## The result is “chunks” of traits staying together, rather than full independence.
 
 const CHR1_LOCI := [
-	# "Life / behavior / timing" bundle
-	{ "name": "mut_rate",          "pos": 0.05 },
-	{ "name": "lifespan",          "pos": 0.12 },
-	{ "name": "speed",             "pos": 0.22 },
-	{ "name": "mate_cooldown",     "pos": 0.25 },
-	{ "name": "social",            "pos": 0.34 },
-	{ "name": "social_strength",   "pos": 0.40 },
-	{ "name": "wander_rate",       "pos": 0.55 },
-	{ "name": "wander_keep",       "pos": 0.62 },
-	{ "name": "fertile_start",     "pos": 0.82 },
-	{ "name": "fertile_end",       "pos": 0.88 },
+	{ "name": "mut_rate", "pos": 0.05 },
+	{ "name": "lifespan", "pos": 0.12 },
+
+	{ "name": "speed", "pos": 0.22 },
+	{ "name": "mate_cooldown", "pos": 0.25 },
+
+	{ "name": "social", "pos": 0.34 },
+	{ "name": "social_strength", "pos": 0.40 },
+
+	{ "name": "wander_rate", "pos": 0.55 },
+	{ "name": "wander_keep", "pos": 0.62 },
+
+	{ "name": "fertile_start", "pos": 0.82 },
+	{ "name": "fertile_end", "pos": 0.88 },
 	{ "name": "species_threshold", "pos": 0.95 },
 ]
 
 const CHR2_LOCI := [
-	# "Plant weirdness / visuals / chemistry" bundle
-	{ "name": "petal_count",     "pos": 0.08 },
+	{ "name": "petal_count", "pos": 0.08 },
 
-	# Gradient genes (linked color chunks!)
-	{ "name": "hue_a",           "pos": 0.10 },
-	{ "name": "sat_a",           "pos": 0.12 },
-	{ "name": "val_a",           "pos": 0.14 },
-	{ "name": "hue_b",           "pos": 0.18 },
-	{ "name": "sat_b",           "pos": 0.20 },
-	{ "name": "val_b",           "pos": 0.24 },
+	# gradient genes (linked chunks)
+	{ "name": "hue_a", "pos": 0.10 },
+	{ "name": "sat_a", "pos": 0.12 },
+	{ "name": "val_a", "pos": 0.14 },
+	{ "name": "hue_b", "pos": 0.18 },
+	{ "name": "sat_b", "pos": 0.20 },
+	{ "name": "val_b", "pos": 0.24 },
 
-	{ "name": "petal_length",    "pos": 0.16 },
-	{ "name": "petal_width",     "pos": 0.22 },
-	{ "name": "flower_size",     "pos": 0.30 },
+	{ "name": "petal_length", "pos": 0.16 },
+	{ "name": "petal_width", "pos": 0.22 },
+	{ "name": "flower_size", "pos": 0.30 },
 
-	{ "name": "leaf_shape",      "pos": 0.46 },
-	{ "name": "leaf_edge",       "pos": 0.52 },
+	{ "name": "leaf_shape", "pos": 0.46 },
+	{ "name": "leaf_edge", "pos": 0.52 },
 
-	# Pattern / glow / toxic in a region that can be "locked" by an inversion
-	{ "name": "spot_pattern",    "pos": 0.60 },
-	{ "name": "vein_contrast",   "pos": 0.66 },
+	# pattern + glow + toxic live here (lockable by inversion)
+	{ "name": "spot_pattern", "pos": 0.60 },
+	{ "name": "vein_contrast", "pos": 0.66 },
 
-	{ "name": "glow_max",        "pos": 0.72 },
+	{ "name": "glow_max", "pos": 0.72 },
 	{ "name": "glow_pulse_rate", "pos": 0.76 },
-	{ "name": "glow_ramp",       "pos": 0.79 },
+	{ "name": "glow_ramp", "pos": 0.79 },
 
-	{ "name": "toxic",           "pos": 0.86 },
-	{ "name": "scent",           "pos": 0.92 },
+	{ "name": "toxic", "pos": 0.86 },
+	{ "name": "scent", "pos": 0.92 },
 ]
 
-# Per-chromosome recombination tuning
-# lam = expected crossovers per meiosis per chromosome
-#
-# λ value    What happens
-# 0.0        No recombination. Whole chromosome inherited from one parent. Pure lineages.
-# 0.5        Usually 0–1 crossovers. Big trait chunks stay together.
-# 1.0        About 1 crossover per chromosome. Moderate mixing.
-# 2.0        2-ish crossovers. Smaller chunks. More scrambling.
-# 5.0        Genetic confetti.
 const CHR_CFG := {
 	1: {
 		"lam": 2.5,
 		"hotspots": [
-			{ "start": 0.50, "end": 0.70, "weight": 3.0 }, # breaks wander bundles sometimes
+			{ "start": 0.50, "end": 0.70, "weight": 3.0 },
 		],
 		"coldspots": []
 	},
 	2: {
 		"lam": 2.5,
 		"hotspots": [
-			{ "start": 0.65, "end": 0.82, "weight": 4.0 }, # "weirdness" recombines more often
+			{ "start": 0.65, "end": 0.82, "weight": 4.0 },
 		],
 		"coldspots": []
 	}
 }
 
-# Inversion that suppresses recombination in a segment (when heterozygous between parents)
-# This "locks" pattern+glow+toxic so they travel together as a lineage chunk.
 const INV_GLOW_LOCK := { "chr": 2, "start": 0.55, "end": 0.90 }
-
 
 # ============================================================
 # GENE SCHEMA
 # ============================================================
-##
-## Defines how each gene is:
-## - randomly initialized for founders (roll_random_genes)
-## - mutated (mutate_value_by_schema)
-## - clamped / validated
-##
-## Types:
-## - float: continuous numeric within [min,max]
-## - hue: wraps 0..1 (circular)
-## - int: integer within [min,max]
-## - bool: true/false
-## - enum: one of listed values
 
 const GENE_SCHEMA := {
-	# HSV for gradient stop A
 	"hue_a": { "type": "hue",   "min": 0.0, "max": 1.0, "mut_amount": 0.10 },
 	"sat_a": { "type": "float", "min": 0.55, "max": 1.0, "mut_amount": 0.12 },
 	"val_a": { "type": "float", "min": 0.55, "max": 1.0, "mut_amount": 0.12 },
 
-	# HSV for gradient stop B
 	"hue_b": { "type": "hue",   "min": 0.0, "max": 1.0, "mut_amount": 0.10 },
 	"sat_b": { "type": "float", "min": 0.55, "max": 1.0, "mut_amount": 0.12 },
 	"val_b": { "type": "float", "min": 0.55, "max": 1.0, "mut_amount": 0.12 },
 
-	# Mutation rate controls overall mutation intensity for offspring
 	"mut_rate": { "type": "float", "min": 0.0, "max": 0.35, "mut_amount": 0.08 },
+	"lifespan":  { "type": "float", "min": 6.0, "max": 120.0, "mut_amount": 6.0 },
 
-	# Lifespan in seconds (age accumulates in _physics_process)
-	"lifespan": { "type": "float", "min": 6.0, "max": 120.0, "mut_amount": 6.0 },
-
-	# Movement
 	"speed": { "type": "float", "min": 40.0, "max": 360.0, "mut_amount": 25.0 },
 
-	# Social movement bias toward nearest neighbor
-	"social": { "type": "float", "min": 0.0, "max": 2.0, "mut_amount": 0.25 },
+	"social":          { "type": "float", "min": 0.0, "max": 2.0, "mut_amount": 0.25 },
 	"social_strength": { "type": "float", "min": 0.0, "max": 0.5, "mut_amount": 0.05 },
 
-	# Wander / direction change
 	"wander_rate": { "type": "float", "min": 0.05, "max": 2.5, "mut_amount": 0.15 },
 	"wander_keep": { "type": "float", "min": 0.0, "max": 1.0, "mut_amount": 0.10 },
 
-	# Mating cooldown and fertility window (as fractions of lifespan)
 	"mate_cooldown": { "type": "float", "min": 0.2, "max": 1.0, "mut_amount": 0.5 },
 	"fertile_start": { "type": "float", "min": 0.0, "max": 0.2, "mut_amount": 0.08 },
 	"fertile_end":   { "type": "float", "min": 0.6, "max": 1.0, "mut_amount": 0.08 },
 
-	# Species threshold: max genetic distance allowed for mating
 	"species_threshold": { "type": "float", "min": 0.4, "max": 0.9, "mut_amount": 0.08 },
 
-	# Glow (fertility halo)
 	"glow_max":        { "type": "float", "min": 1.0, "max": 2.0, "mut_amount": 0.25 },
 	"glow_pulse_rate": { "type": "float", "min": 0.001, "max": 0.02, "mut_amount": 0.003 },
 	"glow_ramp":       { "type": "float", "min": 0.5, "max": 15.0, "mut_amount": 2.0 },
 
-	# Plant weirdness genes
 	"petal_count":  { "type": "int",   "min": 3,   "max": 12,  "mut_amount": 2 },
 	"petal_length": { "type": "float", "min": 0.5, "max": 3.0, "mut_amount": 0.15 },
-	"petal_width":  { "type": "float", "min": 0.6, "max": 2.0, "mut_amount": 0.15 },
+	"petal_width":  { "type": "float", "min": 0.2, "max": 2.0, "mut_amount": 0.15 },
 	"flower_size":  { "type": "float", "min": 0.5, "max": 3.0, "mut_amount": 0.20 },
 
 	"leaf_shape": { "type": "enum", "values": ["round", "oval", "lance", "heart"], "mut_amount": 1 },
@@ -207,16 +160,69 @@ const GENE_SCHEMA := {
 	"toxic": { "type": "bool", "mut_amount": 1 },
 	"scent": { "type": "enum", "values": ["none", "sweet", "funk", "sharp"], "mut_amount": 1 },
 
-	# Structural variant: inversion lock. If parents differ, recombination suppressed in INV_GLOW_LOCK span.
 	"inv_glow_lock": { "type": "bool", "mut_amount": 1 }
 }
 
-# Gene dictionary (all traits live here)
 var genes := {}
 
-# ------------------------------------------------------------
-# Genetics label display controls
-# ------------------------------------------------------------
+# ============================================================
+# STATE
+# ============================================================
+
+var age := 0.0
+var lifespan := 20.0
+var dead := false
+
+var velocity := Vector2.ZERO
+var wander_dir := Vector2.RIGHT
+
+var can_mate := true
+var world_rect := Rect2()
+
+# ============================================================
+# READY
+# ============================================================
+
+func _ready() -> void:
+	add_to_group("cells")
+	world_rect = get_viewport_rect()
+
+	# We draw the flower in _draw(); keep sprite hidden.
+	if sprite:
+		sprite.visible = false
+
+	queue_redraw()
+
+	# Make gradient unique per instance (if you happen to keep a GradientTexture2D on Sprite2D).
+	var tex := sprite.texture as GradientTexture2D
+	if tex != null:
+		tex = tex.duplicate(true)
+		if tex.gradient != null:
+			tex.gradient = tex.gradient.duplicate(true)
+		sprite.texture = tex
+
+	if genes.is_empty():
+		genes = roll_random_genes()
+
+	normalize_fertility_window(genes)
+	lifespan = float(genes.get("lifespan", 20.0))
+
+	apply_genes()
+
+	if wander_timer:
+		wander_timer.wait_time = float(genes.get("wander_rate", 1.0))
+		if not wander_timer.timeout.is_connected(_on_wander_timer_timeout):
+			wander_timer.timeout.connect(_on_wander_timer_timeout)
+
+	if not area_entered.is_connected(_on_area_entered):
+		area_entered.connect(_on_area_entered)
+
+	_on_wander_timer_timeout()
+
+# ============================================================
+# GENETICS LABEL DISPLAY
+# ============================================================
+
 func set_genetics_visible(on: bool) -> void:
 	show_genetics = on
 	refresh_label()
@@ -249,105 +255,9 @@ func gene_card_multiline() -> String:
 	lines.append("inv_glow_lock: %s" % str(bool(genes.get("inv_glow_lock", false))))
 	return "\n".join(lines)
 
-func gene_card_short() -> String:
-	var pc = int(genes.get("petal_count", -1))
-	var fs = float(genes.get("flower_size", 1.0))
-	var pl = float(genes.get("petal_length", 0.0))
-	var pw = float(genes.get("petal_width", 0.0))
-	var leaf_shape_s = str(genes.get("leaf_shape", "?"))
-	var leaf_edge_s = str(genes.get("leaf_edge", "?"))
-	var spot = str(genes.get("spot_pattern", "?"))
-	var veins = float(genes.get("vein_contrast", 0.0))
-	var toxic_b = bool(genes.get("toxic", false))
-	var scent_s = str(genes.get("scent", "none"))
-	var inv = bool(genes.get("inv_glow_lock", false))
-	var glow = float(genes.get("glow_max", 0.0))
-
-	return "sp=%s petals=%d (L%.2f W%.2f) flower=%.2f leaf=%s/%s spots=%s veins=%.2f glow=%.2f toxic=%s scent=%s inv_lock=%s" % [
-		species_tag(),
-		pc, pl, pw, fs,
-		leaf_shape_s, leaf_edge_s,
-		spot, veins,
-		glow,
-		str(toxic_b),
-		scent_s,
-		str(inv)
-	]
-
-
-# ============================================================
-# STATE
-# ============================================================
-var age := 0.0
-var lifespan := 20.0
-var dead := false
-
-var velocity := Vector2.ZERO
-var wander_dir := Vector2.RIGHT
-
-var can_mate := true
-var last_mate_time := -9999.0
-
-var world_rect := Rect2()
-
-
-# ============================================================
-# READY
-# ============================================================
-func _ready() -> void:
-	add_to_group("cells")
-	world_rect = get_viewport_rect()
-
-	# We draw the flower in _draw(), not via sprite art; keep sprite hidden.
-	if sprite:
-		sprite.visible = false
-
-	queue_redraw()
-
-	# Make gradient unique per instance (so changing colors doesn't affect all cells).
-	# NOTE: sprite is hidden but still useful for storing per-instance gradient.
-	if sprite and sprite.texture:
-		var tex := sprite.texture as GradientTexture2D
-		if tex != null:
-			tex = tex.duplicate(true)
-			if tex.gradient != null:
-				tex.gradient = tex.gradient.duplicate(true)
-			sprite.texture = tex
-
-	# Founder roll if empty
-	if genes.is_empty():
-		genes = roll_random_genes()
-	normalize_fertility_window(genes)
-
-	lifespan = float(genes.get("lifespan", 20.0))
-
-	apply_genes()
-
-	# Wander timer rate driven by genes
-	if wander_timer:
-		wander_timer.wait_time = float(genes.get("wander_rate", 1.0))
-		if not wander_timer.timeout.is_connected(_on_wander_timer_timeout):
-			wander_timer.timeout.connect(_on_wander_timer_timeout)
-
-	# Collision for mating
-	if not area_entered.is_connected(_on_area_entered):
-		area_entered.connect(_on_area_entered)
-
-	_on_wander_timer_timeout()
-
-
 # ============================================================
 # GENE SYSTEM
 # ============================================================
-##
-## Genetics overview:
-## - genes is a Dictionary of values.
-## - Founders: random values per schema
-## - Reproduction:
-##     1) recombine_linked on CHR1 and CHR2 using cutpoints
-##     2) merge results to child
-##     3) mutate each gene based on parent's blended mut_rate
-##     4) normalize fertility window
 
 func roll_random_genes() -> Dictionary:
 	var g := {}
@@ -357,7 +267,7 @@ func roll_random_genes() -> Dictionary:
 			"float":
 				g[key] = randf_range(float(s["min"]), float(s["max"]))
 			"hue":
-				g[key] = randf() # 0..1 wraps
+				g[key] = randf()
 			"int":
 				g[key] = randi_range(int(s["min"]), int(s["max"]))
 			"bool":
@@ -368,14 +278,13 @@ func roll_random_genes() -> Dictionary:
 			_:
 				pass
 
-	# Make sure inversion exists for founders
 	if not g.has("inv_glow_lock"):
-		g["inv_glow_lock"] = randf() < 0.25 # rare-ish structural variant
+		g["inv_glow_lock"] = randf() < 0.25
 	return g
 
 func normalize_fertility_window(g: Dictionary) -> void:
-	var fs = float(g.get("fertile_start", 0.1))
-	var fe = float(g.get("fertile_end", 0.8))
+	var fs: float = float(g.get("fertile_start", 0.1))
+	var fe: float = float(g.get("fertile_end", 0.8))
 
 	fs = clamp(fs, 0.0, 0.95)
 	fe = clamp(fe, 0.05, 1.0)
@@ -390,7 +299,7 @@ func choose_parent_any(a, b):
 	return a if randf() < 0.5 else b
 
 func mutate_hue(h: float, mut_rate: float, amount: float) -> float:
-	var out = h
+	var out := h
 	if randf() < mut_rate:
 		out = fposmod(out + randf_range(-amount, amount), 1.0)
 	return out
@@ -400,18 +309,19 @@ func hue_distance(a: float, b: float) -> float:
 	return min(d, 1.0 - d)
 
 func mutate_float(v: float, mut_rate: float, lo: float, hi: float, amount: float) -> float:
+	var out := v
 	if randf() < mut_rate:
-		v += randf_range(-amount, amount)
-	return clamp(v, lo, hi)
+		out += randf_range(-amount, amount)
+	return clamp(out, lo, hi)
 
 func mutate_int(v: int, mut_rate: float, lo: int, hi: int, step_amount: int) -> int:
+	var out := v
 	if randf() < mut_rate:
-		# Mostly small steps, rarely a bigger leap
-		var step = randi_range(-step_amount, step_amount)
+		var step := randi_range(-step_amount, step_amount)
 		if randf() < (mut_rate * 0.15):
 			step += randi_range(-step_amount * 2, step_amount * 2)
-		v += step
-	return clamp(v, lo, hi)
+		out += step
+	return clamp(out, lo, hi)
 
 func mutate_bool(v: bool, mut_rate: float) -> bool:
 	if randf() < mut_rate:
@@ -423,21 +333,36 @@ func mutate_enum(v, mut_rate: float, values: Array):
 		return values[randi() % values.size()]
 	return v
 
+func mutate_value_by_schema(key: String, value, cmut: float):
+	if not GENE_SCHEMA.has(key):
+		return value
+
+	var s = GENE_SCHEMA[key]
+	match s["type"]:
+		"float":
+			return mutate_float(float(value), cmut, float(s["min"]), float(s["max"]), float(s["mut_amount"]))
+		"hue":
+			return mutate_hue(float(value), cmut, float(s["mut_amount"]))
+		"int":
+			return mutate_int(int(value), cmut, int(s["min"]), int(s["max"]), int(s["mut_amount"]))
+		"bool":
+			return mutate_bool(bool(value), cmut)
+		"enum":
+			return mutate_enum(value, cmut, s["values"])
+		_:
+			return value
+
 # --- Recombination utilities (linked loci + lam + hotspots + inversions) ---
 
-## Poisson sampler used for number of crossovers per chromosome.
 func poisson(lam: float) -> int:
 	var L = exp(-lam)
-	var k = 0
-	var p = 1.0
+	var k := 0
+	var p := 1.0
 	while p > L:
 		k += 1
 		p *= randf()
 	return k - 1
 
-## Applies hotspot/coldspot interval weighting.
-## intervals: [ [a,b,w], ... ]
-## mods: [ {start,end,weight}, ... ]
 func apply_modifiers(intervals: Array, mods: Array) -> Array:
 	var out := intervals
 	for m in mods:
@@ -464,7 +389,6 @@ func apply_modifiers(intervals: Array, mods: Array) -> Array:
 		out = next
 	return out
 
-## Sample a crossover cut position in [0,1], respecting hotspot/coldspot weighting.
 func sample_cut(cfg: Dictionary) -> float:
 	var intervals := []
 	intervals.append([0.0, 1.0, 1.0])
@@ -494,15 +418,13 @@ func cut_is_suppressed(cut: float, suppressed_spans: Array) -> bool:
 			return true
 	return false
 
-## Repeatedly samples cuts until one lands outside suppressed spans.
-func sample_cut_respecting(cfg: Dictionary, suppressed_spans: Array, max_tries := 24) -> float:
-	for i in range(max_tries):
+func sample_cut_respecting(cfg: Dictionary, suppressed_spans: Array, max_tries: int = 24) -> float:
+	for _i in range(max_tries):
 		var c = sample_cut(cfg)
 		if not cut_is_suppressed(c, suppressed_spans):
 			return c
 	return -1.0
 
-## When parents differ in inversion state, crossovers inside the inversion are suppressed.
 func get_suppressed_spans_for_chr2(a: Dictionary, b: Dictionary) -> Array:
 	var spans := []
 	var inv_a = bool(a.get("inv_glow_lock", false))
@@ -511,9 +433,6 @@ func get_suppressed_spans_for_chr2(a: Dictionary, b: Dictionary) -> Array:
 		spans.append([float(INV_GLOW_LOCK["start"]), float(INV_GLOW_LOCK["end"])])
 	return spans
 
-## Produces ONE recombinant "chromatid" for the specified loci:
-## - Generate N cuts (Poisson)
-## - Walk loci in order and flip parent source at each cut
 func recombine_linked(a: Dictionary, b: Dictionary, loci: Array, cfg: Dictionary, suppressed_spans: Array) -> Dictionary:
 	var out := {}
 
@@ -521,7 +440,7 @@ func recombine_linked(a: Dictionary, b: Dictionary, loci: Array, cfg: Dictionary
 	var n = poisson(lam)
 
 	var cuts := []
-	for i in range(n):
+	for _i in range(n):
 		var cut = sample_cut_respecting(cfg, suppressed_spans)
 		if cut >= 0.0:
 			cuts.append(cut)
@@ -530,7 +449,6 @@ func recombine_linked(a: Dictionary, b: Dictionary, loci: Array, cfg: Dictionary
 	var flip := false
 	var ci := 0
 
-	# Choose initial source randomly to avoid bias.
 	if randf() < 0.5:
 		flip = true
 
@@ -542,53 +460,23 @@ func recombine_linked(a: Dictionary, b: Dictionary, loci: Array, cfg: Dictionary
 			flip = !flip
 			ci += 1
 
-		# flip == false => take from a, flip == true => take from b
 		out[name] = b.get(name) if flip else a.get(name)
 
 	return out
 
-func mutate_value_by_schema(key: String, value, cmut: float):
-	if not GENE_SCHEMA.has(key):
-		return value
-
-	var s = GENE_SCHEMA[key]
-	match s["type"]:
-		"float":
-			return mutate_float(float(value), cmut, float(s["min"]), float(s["max"]), float(s["mut_amount"]))
-		"hue":
-			return mutate_hue(float(value), cmut, float(s["mut_amount"]))
-		"int":
-			return mutate_int(int(value), cmut, int(s["min"]), int(s["max"]), int(s["mut_amount"]))
-		"bool":
-			return mutate_bool(bool(value), cmut)
-		"enum":
-			return mutate_enum(value, cmut, s["values"])
-		_:
-			return value
-
-## Full child creation from two parents:
-## - Recombinant chromosome 1 + chromosome 2 (with inversion suppression)
-## - Merge gene dicts
-## - Mutate all genes
-## - Normalize fertility
 func recombine_genes(a: Dictionary, b: Dictionary) -> Dictionary:
 	var child := {}
 	var cmut = lerp(float(a.get("mut_rate", 0.1)), float(b.get("mut_rate", 0.1)), randf())
 
-	# Chromosome 1 (behavior)
 	var chr1 = recombine_linked(a, b, CHR1_LOCI, CHR_CFG[1], [])
-
-	# Chromosome 2 (visual/chemistry) with inversion suppression
 	var suppressed2 = get_suppressed_spans_for_chr2(a, b)
 	var chr2 = recombine_linked(a, b, CHR2_LOCI, CHR_CFG[2], suppressed2)
 
-	# Merge into child
 	for k in chr1.keys():
 		child[k] = chr1[k]
 	for k in chr2.keys():
 		child[k] = chr2[k]
 
-	# Any genes not covered by chromosomes still inherit independently.
 	for key in GENE_SCHEMA:
 		if child.has(key):
 			continue
@@ -599,46 +487,26 @@ func recombine_genes(a: Dictionary, b: Dictionary) -> Dictionary:
 			_:
 				pass
 
-	# Mutate everything according to schema
 	for key in child.keys():
 		child[key] = mutate_value_by_schema(key, child[key], cmut)
 
 	normalize_fertility_window(child)
 	return child
 
-
 # ============================================================
 # APPLY GENES (visual + derived state)
 # ============================================================
-##
-## Updates:
-## - gradient texture colors
-## - sprite scale (simple hook for flower_size)
-## - species_id and label formatting
+
 func apply_genes() -> void:
-	if sprite and sprite.texture:
-		var tex := sprite.texture as GradientTexture2D
-		if tex != null and tex.gradient != null:
-			var ca = Color.from_hsv(
-				float(genes.get("hue_a", 0.0)),
-				float(genes.get("sat_a", 1.0)),
-				float(genes.get("val_a", 1.0)),
-				1.0
-			)
-			var cb = Color.from_hsv(
-				float(genes.get("hue_b", 0.0)),
-				float(genes.get("sat_b", 1.0)),
-				float(genes.get("val_b", 1.0)),
-				1.0
-			)
-			tex.gradient.set_color(0, ca)
-			tex.gradient.set_color(1, cb)
+	# Update gradient (optional)
+	var tex := sprite.texture as GradientTexture2D
+	if tex != null and tex.gradient != null:
+		var ca = Color.from_hsv(float(genes.get("hue_a", 0.0)), float(genes.get("sat_a", 1.0)), float(genes.get("val_a", 1.0)), 1.0)
+		var cb = Color.from_hsv(float(genes.get("hue_b", 0.0)), float(genes.get("sat_b", 1.0)), float(genes.get("val_b", 1.0)), 1.0)
+		tex.gradient.set_color(0, ca)
+		tex.gradient.set_color(1, cb)
 
-	# A safe visual hook for "flower_size" without needing new art
-	if sprite:
-		var fs = float(genes.get("flower_size", 1.0))
-		sprite.scale = Vector2.ONE * clamp(fs, 0.5, 2.0)
-
+	# Update species id + label
 	species_id = compute_species_id()
 
 	if species_label != null:
@@ -652,12 +520,45 @@ func apply_genes() -> void:
 		_base_label_text = species_label.text
 		refresh_label()
 
-		# Tiny hint: toxic plants tint the label slightly
 		var tox = bool(genes.get("toxic", false))
 		species_label.modulate = Color(1, 0.9, 0.9, 1) if tox else Color(1, 1, 1, 1)
 
+	# IMPORTANT: collision scales with genetics
+	update_collision_shape_from_genes()
+
 	queue_redraw()
 
+# ============================================================
+# COLLISION SHAPE: Capsule scales with flower size + petals
+# ============================================================
+
+func update_collision_shape_from_genes() -> void:
+	if collision_shape == null:
+		return
+	if collision_shape.shape == null:
+		return
+
+	var cap := collision_shape.shape as CapsuleShape2D
+	if cap == null:
+		# You can switch to CircleShape2D if you want, but capsule is best for "bulby plant".
+		return
+
+	var flower_size: float = float(genes.get("flower_size", 1.0))
+	var petal_length: float = float(genes.get("petal_length", 1.0))
+	var petal_width: float = float(genes.get("petal_width", 1.0))
+
+	# Same base radius used in drawing: radius = 20 * flower_size
+	var base_radius: float = 20.0 * flower_size
+
+	# Capsule radius: "body width" of the plant (includes petals a bit)
+	var r: float = base_radius * (0.42 + 0.22 * clamp(petal_width, 0.2, 2.0) + 0.06 * clamp(petal_length, 0.5, 3.0))
+
+	# Capsule reach: petals extend outward, so increase half-length with petal_length
+	var half_len: float = base_radius * (0.45 + 0.65 * clamp(petal_length, 0.5, 3.0))
+
+	cap.radius = max(6.0, r)
+	# CapsuleShape2D.height is the middle section height (excluding the semicircle caps).
+	cap.height = max(0.0, (half_len * 2.0) - (cap.radius * 2.0))
 
 # ============================================================
 # DRAWING UTILITIES
@@ -668,7 +569,6 @@ func quad_bezier(p0: Vector2, p1: Vector2, p2: Vector2, t: float) -> Vector2:
 	var b = p1.lerp(p2, t)
 	return a.lerp(b, t)
 
-## Standard petal outline via two quadratic beziers: base->tip left edge, then tip->base right edge.
 func build_petal_outline(base: Vector2, tip: Vector2, left_ctrl: Vector2, right_ctrl: Vector2, steps: int) -> PackedVector2Array:
 	var pts := PackedVector2Array()
 
@@ -682,8 +582,6 @@ func build_petal_outline(base: Vector2, tip: Vector2, left_ctrl: Vector2, right_
 
 	return pts
 
-## Edge style adds serration/lobes by perturbing points outward along the local normal.
-## intensity 0..1
 func apply_edge_style(points: PackedVector2Array, base: Vector2, tip: Vector2, edge: String, intensity: float) -> PackedVector2Array:
 	if edge == "smooth" or points.size() < 6 or intensity <= 0.01:
 		return points
@@ -701,8 +599,8 @@ func apply_edge_style(points: PackedVector2Array, base: Vector2, tip: Vector2, e
 
 	for i in range(points.size()):
 		var p = points[i]
-		var t = float(i) / float(max(1, points.size() - 1)) # 0..1 around outline
-		var side_weight = sin(PI * t) # 0 at ends, 1 mid (reduce distortion near base/tip)
+		var t = float(i) / float(max(1, points.size() - 1))
+		var side_weight = sin(PI * t)
 
 		var jitter = 0.0
 		match edge:
@@ -713,109 +611,140 @@ func apply_edge_style(points: PackedVector2Array, base: Vector2, tip: Vector2, e
 			_:
 				jitter = 0.0
 
-		var amp = intensity * side_weight * 3.0
+		var amp = min(intensity * side_weight * 2.0, 3.0)
+
 		out[i] = p + normal * (jitter * amp)
 
 	return out
 
+# Heart silhouette oriented base -> tip, built from bezier segments (no nested functions).
 ## HEART PETAL OUTLINE (stable "petal-heart")
 ##
 ## Builds a heart-shaped petal silhouette oriented from `base` -> `tip`.
-## - `width` controls lobe width.
-## - `steps` controls smoothness (48–96 is great).
-##
-## Shape:
-## - Notch near base (two corners + center notch)
-## - Two lobes
-## - Tapered tip
-##
-## IMPORTANT: no nested functions here (Godot 4).
+## Returns points in a non-self-intersecting order:
+## notch -> left lobe -> tip -> right lobe -> back to notch.
 func build_heart_outline(base: Vector2, tip: Vector2, width: float, steps: int) -> PackedVector2Array:
-	steps = max(24, steps)
-
-	var axis = (tip - base)
-	var axis_len = axis.length()
+	var axis := (tip - base)
+	var axis_len := axis.length()
 	if axis_len <= 0.001:
 		return PackedVector2Array()
 
-	var forward = axis / axis_len
-	var right = forward.rotated(PI / 2.0)
+	var forward := axis / axis_len
+	var right := forward.rotated(PI / 2.0)
 
-	# Shape tuning
-	var notch_depth = axis_len * 0.18
-	var lobe_height = axis_len * 0.35
-	var tip_taper   = 0.55
+	# Shape tuning (feel free to tweak)
+	var notch_depth: float = axis_len * 0.18
+	var lobe_height: float = axis_len * 0.35
+	var tip_taper: float   = 0.55
+
 	width = max(width, axis_len * 0.05)
 
 	var pts := PackedVector2Array()
 
-	var notch = base + forward * (notch_depth * 0.55)
+	# Points that define the silhouette
+	var notch: Vector2 = base + forward * (notch_depth * 0.55)
 
-	# Note: using +right for one side and -right for the other is fine,
-	# because the path is just a polygon outline.
-	var notch_left  = base + forward * (notch_depth * 0.25) + right * (width * 0.20)
-	var notch_right = base + forward * (notch_depth * 0.25) - right * (width * 0.20)
+	var notch_left: Vector2  = base + forward * (notch_depth * 0.25) + right * (width * 0.20)
+	var notch_right: Vector2 = base + forward * (notch_depth * 0.25) - right * (width * 0.20)
 
-	var lobe_left  = base + forward * lobe_height + right * (width * 0.55)
-	var lobe_right = base + forward * lobe_height - right * (width * 0.55)
+	var lobe_left: Vector2  = base + forward * lobe_height + right * (width * 0.55)
+	var lobe_right: Vector2 = base + forward * lobe_height - right * (width * 0.55)
 
-	var tip_point = tip
+	var tip_point: Vector2 = tip
+
+	# Segment counts
+	var seg: int = max(4, int(steps / 6))
+	var seg2: int = max(6, int(steps / 3))
 
 	# notch -> lobe_left
-	var seg = max(4, steps / 6)
 	for i in range(seg + 1):
-		var t = float(i) / float(seg)
+		var t: float = float(i) / float(seg)
 		pts.append(quad_bezier(notch, notch_left, lobe_left, t))
 
-	# lobe_left -> tip with taper
-	var seg2 = max(6, steps / 3)
+	# lobe_left -> tip (with taper squeeze)
 	for i in range(seg2 + 1):
-		var t = float(i) / float(seg2)
-		var ctrl = lobe_left.lerp(base + forward * (axis_len * 0.75), 0.55)
-		var p = quad_bezier(lobe_left, ctrl, tip_point, t)
+		var t: float = float(i) / float(seg2)
+		var ctrl: Vector2 = lobe_left.lerp(base + forward * (axis_len * 0.75), 0.55)
+		var p: Vector2 = quad_bezier(lobe_left, ctrl, tip_point, t)
 
-		var along = (p - base).dot(forward)
-		var u = clamp(along / axis_len, 0.0, 1.0)
-		var squeeze = lerp(1.0, tip_taper, pow(u, 1.8))
-		var lateral = (p - base).dot(right)
+		var along: float = (p - base).dot(forward)
+		var u: float = clamp(along / axis_len, 0.0, 1.0)
+		var squeeze: float = lerp(1.0, tip_taper, pow(u, 1.8))
+		var lateral: float = (p - base).dot(right)
 		p = base + forward * along + right * (lateral * squeeze)
 
 		pts.append(p)
 
-	# tip -> lobe_right (reverse) with taper
-	for i in range(seg2, -1, -1):
-		var t = float(i) / float(seg2)
-		var ctrl = lobe_right.lerp(base + forward * (axis_len * 0.75), 0.55)
-		var p = quad_bezier(lobe_right, ctrl, tip_point, t)
+	# tip -> lobe_right
+	for i in range(seg2 + 1):
+		var t: float = float(i) / float(seg2)
+		var ctrl: Vector2 = lobe_right.lerp(base + forward * (axis_len * 0.75), 0.55)
+		var p: Vector2 = quad_bezier(tip_point, ctrl, lobe_right, t)
 
-		var along = (p - base).dot(forward)
-		var u = clamp(along / axis_len, 0.0, 1.0)
-		var squeeze = lerp(1.0, tip_taper, pow(u, 1.8))
-		var lateral = (p - base).dot(right)
+		var along: float = (p - base).dot(forward)
+		var u: float = clamp(along / axis_len, 0.0, 1.0)
+		var squeeze: float = lerp(1.0, tip_taper, pow(u, 1.8))
+		var lateral: float = (p - base).dot(right)
 		p = base + forward * along + right * (lateral * squeeze)
 
 		pts.append(p)
 
-	# lobe_right -> notch
-	for i in range(seg, -1, -1):
-		var t = float(i) / float(seg)
-		pts.append(quad_bezier(notch, notch_right, lobe_right, t))
-
-	# Ensure closure
-	if pts.size() > 0 and pts[pts.size() - 1].distance_to(notch) > 0.001:
-		pts.append(notch)
+	# lobe_right -> notch (THIS DIRECTION MATTERS)
+	for i in range(seg + 1):
+		var t: float = float(i) / float(seg)
+		pts.append(quad_bezier(lobe_right, notch_right, notch, t))
 
 	return pts
+
+## Removes near-duplicate points (and optional closing duplicate).
+func _clean_polygon(points: PackedVector2Array, eps: float = 0.5) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	if points.size() < 3:
+		return out
+
+	var last: Vector2 = points[0]
+	out.append(last)
+
+	for i in range(1, points.size()):
+		var p: Vector2 = points[i]
+		if p.distance_to(last) > eps:
+			out.append(p)
+			last = p
+
+	# Remove closing duplicate if present
+	if out.size() >= 2 and out[0].distance_to(out[out.size() - 1]) <= eps:
+		out.remove_at(out.size() - 1)
+
+	return out
+
+
+## Returns true if polygon is drawable (triangulates successfully).
+func _is_triangulatable(points: PackedVector2Array) -> bool:
+	if points.size() < 3:
+		return false
+	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(points)
+	return indices.size() >= 3
+
+
+## Draw polygon safely: if triangulation fails, draw an outline instead (no error spam).
+func _safe_draw_colored_polygon(points: PackedVector2Array, color: Color, outline_width: float = 1.0) -> void:
+	var pts := _clean_polygon(points, 0.5)
+	if pts.size() < 3:
+		return
+
+	if _is_triangulatable(pts):
+		draw_colored_polygon(pts, color)
+	else:
+		# Fallback: outline only (prevents "triangulation failed" spam)
+		# Close the loop visually
+		var loop := PackedVector2Array(pts)
+		loop.append(pts[0])
+		draw_polyline(loop, color, outline_width, true)
 
 
 # ============================================================
 # DRAW
 # ============================================================
-##
-## Procedural flower rendering:
-## - uses genes for count/size/shape/edge/style
-## - glow halo drawn as layered circles
-## - spots drawn with stable per-instance RNG so they don't flicker
 
 func _draw() -> void:
 	if genes.is_empty():
@@ -836,7 +765,6 @@ func _draw() -> void:
 	var spot_pattern = str(genes.get("spot_pattern", "none"))
 	var vein_contrast = float(genes.get("vein_contrast", 0.0))
 
-	# Base color from gradient A
 	var base_color = Color.from_hsv(
 		float(genes.get("hue_a", 0.0)),
 		float(genes.get("sat_a", 1.0)),
@@ -849,14 +777,10 @@ func _draw() -> void:
 		float(genes.get("val_b", 1.0))
 	)
 
-	var radius = 20.0 * flower_size
-	var center = Vector2.ZERO
+	var radius: float = 20.0 * flower_size
+	var center := Vector2.ZERO
 
 	# --- Halo (soft glow) ---
-	# Glow is strongest when:
-	# - can_mate == true
-	# - age is inside fertility window
-	# - not dead
 	var fertile_start = float(genes.get("fertile_start", 0.1))
 	var fertile_end = float(genes.get("fertile_end", 0.8))
 	var fertile = age >= lifespan * fertile_start and age <= lifespan * fertile_end
@@ -865,7 +789,7 @@ func _draw() -> void:
 	var glow_intensity = glow_strength * pulse
 	var glow_color = Color.from_hsv(float(genes.get("hue_a", 0.0)), 0.6, 1.0, 1.0)
 
-	if glow_intensity > 0.01:
+	if glow_intensity > 0.01 and can_mate and fertile and not dead:
 		var a = clamp(glow_intensity * 0.35, 0.0, 0.45)
 		draw_circle(center, radius * 1.25, Color(glow_color.r, glow_color.g, glow_color.b, a * 0.35))
 		draw_circle(center, radius * 1.10, Color(glow_color.r, glow_color.g, glow_color.b, a * 0.55))
@@ -873,18 +797,15 @@ func _draw() -> void:
 
 	# --- Petals ---
 	var steps = 12
-
 	for i in range(petal_count):
 		var angle = TAU * float(i) / float(petal_count)
 		var dir = Vector2.RIGHT.rotated(angle)
 		var side = dir.rotated(PI / 2.0)
 
-		# Base radius/size
 		var base_in: float = 0.20
-		var length_mult: float = float(petal_length)
-		var width_mult: float = float(petal_width)
+		var length_mult: float = petal_length
+		var width_mult: float = petal_width
 
-		# leaf_shape controls silhouette
 		match leaf_shape:
 			"round":
 				length_mult *= 0.75
@@ -909,31 +830,28 @@ func _draw() -> void:
 		var w = radius * width_mult * 0.55
 		w = clamp(w, radius * 0.10, radius * 0.95)
 
-		# Control points for standard petals
-		var forward_amt = radius * length_mult * 0.30
+		var forward = radius * length_mult * 0.30
 		var base_push = radius * 0.10
-		var left_ctrl = base + dir * (forward_amt + base_push) + side * w
-		var right_ctrl = base + dir * (forward_amt + base_push) - side * w
+		var left_ctrl = base + dir * (forward + base_push) + side * w
+		var right_ctrl = base + dir * (forward + base_push) - side * w
 
 		var pts: PackedVector2Array
 		if leaf_shape == "heart":
 			var heart_w = clamp(w * 1.15, radius * 0.12, radius * 0.95)
-			pts = build_heart_outline(base, tip, heart_w, 64) # smoother heart
+			pts = build_heart_outline(base, tip, heart_w, 64)
 		else:
 			pts = build_petal_outline(base, tip, left_ctrl, right_ctrl, steps)
 
-		# leaf_edge modifies outline: serrated/lobed
 		var edge_intensity = clamp(vein_contrast, 0.0, 1.0)
 		pts = apply_edge_style(pts, base, tip, leaf_edge, edge_intensity)
 
-		draw_colored_polygon(pts, base_color)
+		_safe_draw_colored_polygon(pts, base_color, 1.0)
 
-		# Veins (stronger when vein_contrast is high)
+
 		if vein_contrast > 0.05:
 			var vein_color = base_color.lerp(Color.WHITE, vein_contrast)
 			draw_line(base, tip, vein_color, 1.2 + 1.2 * vein_contrast)
 
-			# Extra: heart gets two subtle side veins
 			if leaf_shape == "heart" and vein_contrast > 0.15:
 				var vein_color2 = base_color.lerp(Color.WHITE, vein_contrast * 0.8)
 				draw_line(base, base + (tip - base) * 0.75 + side * (w * 0.25), vein_color2, 1.0)
@@ -942,43 +860,33 @@ func _draw() -> void:
 	# --- Center disk ---
 	draw_circle(center, radius * 0.35, center_color)
 
-	# --- Spot patterns ---
+	# --- Spots ---
 	match spot_pattern:
 		"freckle":
-			for j in range(8):
-				var r = rng.randf_range(radius * 0.2, radius * 0.8)
-				var a = rng.randf() * TAU
-				draw_circle(center + Vector2.RIGHT.rotated(a) * r, 2.0, center_color)
+			for _j in range(8):
+				var rr = rng.randf_range(radius * 0.2, radius * 0.8)
+				var aa = rng.randf() * TAU
+				draw_circle(center + Vector2.RIGHT.rotated(aa) * rr, 2.0, center_color)
 		"polka":
 			for j in range(petal_count):
-				var a = TAU * float(j) / float(petal_count)
-				var r = radius * 0.65
-				draw_circle(center + Vector2.RIGHT.rotated(a) * r, 3.0, center_color)
+				var aa = TAU * float(j) / float(petal_count)
+				draw_circle(center + Vector2.RIGHT.rotated(aa) * (radius * 0.65), 3.0, center_color)
 		"ring":
 			draw_circle(center, radius * 0.75, center_color)
 		_:
 			pass
 
-
 # ============================================================
 # INPUT (selection)
 # ============================================================
-func _input_event(viewport: Viewport, event: InputEvent, shape_idx: int) -> void:
+
+func _input_event(_viewport: Viewport, event: InputEvent, _shape_idx: int) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		emit_signal("cell_selected", self)
-
 
 # ============================================================
 # SPECIES
 # ============================================================
-##
-## Species ID:
-## - quantizes hue/sat/val into bins
-## - hashes them into an int
-##
-## Species distance:
-## - hue distance dominates
-## - sat/val contribute lightly
 
 func compute_species_id() -> int:
 	var qh = 12.0
@@ -1006,15 +914,9 @@ func species_distance(a: Dictionary, b: Dictionary) -> float:
 
 	return (d_ha + d_hb) * 0.45 + (d_sa + d_va + d_sb + d_vb) * 0.10
 
-
 # ============================================================
 # MOVEMENT
 # ============================================================
-##
-## Behavior:
-## - wander_dir changes on timer
-## - keep_in_bounds bounces off viewport edges
-## - nudge_toward_others biases wander_dir toward nearest cell based on social genes
 
 func _physics_process(delta: float) -> void:
 	if dead:
@@ -1030,7 +932,6 @@ func _physics_process(delta: float) -> void:
 
 	keep_in_bounds()
 	update_glow(delta)
-
 	queue_redraw()
 
 func _on_wander_timer_timeout() -> void:
@@ -1057,16 +958,9 @@ func nudge_toward_others() -> void:
 		var s = float(genes.get("social", 0.0)) * float(genes.get("social_strength", 0.0))
 		wander_dir = (wander_dir * (1.0 - s) + to_other * s).normalized()
 
-
 # ============================================================
 # GLOW
 # ============================================================
-##
-## Glow is computed each frame:
-## - target is glow_max when fertile + can_mate + alive
-## - glow_strength lerps toward target with glow_ramp
-## - pulsing uses sin(Time * glow_pulse_rate)
-## - self_modulate shifts toward glow color
 
 func update_glow(delta: float) -> void:
 	var fertile_start = float(genes.get("fertile_start", 0.1))
@@ -1082,30 +976,15 @@ func update_glow(delta: float) -> void:
 	var glow_color = Color.from_hsv(float(genes.get("hue_a", 0.0)), 0.6, 1.0, 1.0)
 	self_modulate = Color(1, 1, 1, 1).lerp(glow_color, intensity)
 
-
 # ============================================================
 # MATING
 # ============================================================
-##
-## Mating trigger:
-## - uses Area2D collision (area_entered)
-## - only one side initiates to avoid duplicates
-## - checks:
-##     dead
-##     cooldown for self and other
-##     fertility window (age fraction)
-##     species distance <= species_threshold
-## - spawns a baby by duplicating this node, then assigning child genes
-##
-## Cooldown reset:
-## - uses a Timer from SceneTree
-## - connects timeout to a real method (no inline lambda)
 
-func _on_area_entered(other: Area2D) -> void:
+func _on_area_entered(other) -> void:
 	if other == self or not other.is_in_group("cells"):
 		return
 
-	# Only one side initiates to avoid duplicate events
+	# only one side initiates to avoid duplicates
 	if get_instance_id() > other.get_instance_id():
 		return
 
@@ -1120,7 +999,6 @@ func _on_area_entered(other: Area2D) -> void:
 
 	var fertile_start = float(genes.get("fertile_start", 0.1))
 	var fertile_end = float(genes.get("fertile_end", 0.8))
-
 	if age < lifespan * fertile_start:
 		return
 	if age > lifespan * fertile_end:
@@ -1139,10 +1017,9 @@ func mate_with_deferred(partner: Area2D, dist: float) -> void:
 		return
 	if "dead" in partner and partner.dead:
 		return
-
 	mate_with(partner, dist)
 
-func mate_with(partner: Area2D, dist: float = -1.0) -> void:
+func mate_with(partner, dist: float = -1.0) -> void:
 	if not is_instance_valid(partner):
 		return
 
@@ -1159,32 +1036,28 @@ func mate_with(partner: Area2D, dist: float = -1.0) -> void:
 	baby.apply_genes()
 	baby.can_mate = false
 
-	var cooldown = float(genes.get("mate_cooldown", 1.5))
+	var cooldown: float = float(genes.get("mate_cooldown", 1.5))
 
-	var self_ref: WeakRef = weakref(self)
-	var partner_ref: WeakRef = weakref(partner)
+	var self_ref = weakref(self)
+	var partner_ref = weakref(partner)
 
-	var t: SceneTreeTimer = get_tree().create_timer(cooldown)
-	t.timeout.connect(Callable(self, "_on_mate_cooldown_timeout").bind(self_ref, partner_ref))
+	var t := get_tree().create_timer(cooldown)
 
-func _on_mate_cooldown_timeout(self_ref: WeakRef, partner_ref: WeakRef) -> void:
-	var s = self_ref.get_ref()
-	if s != null and is_instance_valid(s) and not s.dead:
-		s.can_mate = true
+	# IMPORTANT: store lambda in a variable (fixes "Standalone lambdas cannot be accessed")
+	var cb := func() -> void:
+		var s = self_ref.get_ref()
+		if s != null and is_instance_valid(s) and not s.dead:
+			s.can_mate = true
 
-	var p = partner_ref.get_ref()
-	if p != null and is_instance_valid(p) and not p.dead:
-		p.can_mate = true
+		var p = partner_ref.get_ref()
+		if p != null and is_instance_valid(p) and not p.dead:
+			p.can_mate = true
 
+	t.timeout.connect(cb)
 
 # ============================================================
 # DEATH
 # ============================================================
-##
-## On death:
-## - stop movement and timer
-## - fade out sprite alpha (even though sprite is hidden, safe)
-## - queue_free after tween
 
 func die() -> void:
 	dead = true
@@ -1198,12 +1071,10 @@ func die() -> void:
 		tween.tween_property(sprite, "modulate:a", 0.0, 0.6)
 	tween.finished.connect(queue_free)
 
-
 # ============================================================
 # BOUNDS
 # ============================================================
-##
-## Bounces inside viewport rectangle.
+
 func keep_in_bounds() -> void:
 	if position.x < world_rect.position.x:
 		position.x = world_rect.position.x
@@ -1219,10 +1090,10 @@ func keep_in_bounds() -> void:
 		position.y = world_rect.end.y
 		wander_dir.y = -abs(wander_dir.y)
 
-
 # ============================================================
 # ID HELPERS (optional)
 # ============================================================
+
 func short_id() -> String:
 	return str(get_instance_id() % 100000)
 
