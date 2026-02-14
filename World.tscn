@@ -31,11 +31,25 @@ layout_mode = 2
 layout_mode = 2
 text = "Show Genetics"
 
+[node name="InspectorMode" type="OptionButton" parent="UI/Panel/VBox/SecondRow"]
+layout_mode = 2
+item_count = 4
+popup/item_0/text = "Phenotype"
+popup/item_0/id = 0
+popup/item_1/text = "Genotype"
+popup/item_1/id = 1
+popup/item_2/text = "Chromosomes"
+popup/item_2/id = 2
+popup/item_3/text = "ALL"
+popup/item_3/id = 3
+
 [node name="Title" type="Label" parent="UI/Panel/VBox"]
 layout_mode = 2
 text = "---------------------------
 Phenotype  Inspector"
 
 [node name="GeneticsText" type="RichTextLabel" parent="UI/Panel/VBox"]
-custom_minimum_size = Vector2(250, 300)
+custom_minimum_size = Vector2(600, 1400)
 layout_mode = 2
+theme_override_font_sizes/normal_font_size = 18
+tab_size = 5

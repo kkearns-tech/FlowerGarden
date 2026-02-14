@@ -1231,6 +1231,230 @@ func keep_in_bounds() -> void:
 		position.y = world_rect.end.y
 		wander_dir.y = -abs(wander_dir.y)
 
+# ============================================================
+# DIPLOID INSPECTOR + CHROMOSOME VISUALIZER
+# ============================================================
+##
+## What you get:
+## - Phenotype card (expressed genes)
+## - Genotype card (A | B → expressed, with dominance rules)
+## - Chromosome rails (CHR1/CHR2) with loci order + distances
+## - Heterozygous highlighting + inversion shading for CHR2
+##
+## Requires:
+## - chr1_a, chr1_b, chr2_a, chr2_b dictionaries exist
+## - genes dictionary exists (phenotype/expression)
+##
+## Notes on dominance:
+## - floats/hues: expressed = average (hue uses circular mean)
+## - bool: expressed = OR (True dominates)
+## - enum: we pick allele with higher dominance rank (see DOMINANCE)
+## - int: expressed = round((a+b)/2) by default
+##
+
+# --- dominance ranks for enum genes ---
+# Higher number wins when heterozygous.
+const DOMINANCE := {
+	"leaf_shape": {
+		"heart": 4,
+		"lance": 3,
+		"oval": 2,
+		"round": 1,
+	},
+	"leaf_edge": {
+		"lobed": 3,
+		"serrated": 2,
+		"smooth": 1,
+	},
+	"spot_pattern": {
+		"ring": 4,
+		"polka": 3,
+		"freckle": 2,
+		"none": 1,
+	},
+	"scent": {
+		"sharp": 4,
+		"funk": 3,
+		"sweet": 2,
+		"none": 1,
+	},
+}
+
+# --- helpful: circular mean for hue ---
+func _hue_mean(a: float, b: float) -> float:
+	var ang_a: float = a * TAU
+	var ang_b: float = b * TAU
+	var x: float = cos(ang_a) + cos(ang_b)
+	var y: float = sin(ang_a) + sin(ang_b)
+	if abs(x) < 0.000001 and abs(y) < 0.000001:
+		return a # opposite hues: just keep a
+	var ang: float = atan2(y, x)
+	return fposmod(ang / TAU, 1.0)
+
+func _enum_pick_dominant(key: String, a, b):
+	if not DOMINANCE.has(key):
+		return a # fallback: allele A dominates
+	var ranks: Dictionary = DOMINANCE[key]
+	var ra: int = int(ranks.get(a, 0))
+	var rb: int = int(ranks.get(b, 0))
+	return a if ra >= rb else b
+
+func _format_val(v) -> String:
+	# Keep it readable in UI
+	if typeof(v) == TYPE_FLOAT:
+		return "%.3f" % float(v)
+	return str(v)
+
+func _is_hetero(a, b) -> bool:
+	return str(a) != str(b)
+
+# ------------------------------------------------------------
+# GENOTYPE + PHENOTYPE TEXT CARDS
+# ------------------------------------------------------------
+
+func phenotype_card_multiline() -> String:
+	# This is basically your current inspector: expressed traits
+	var lines: Array[String] = []
+	lines.append("PHENOTYPE (expressed)")
+	lines.append("petals: %s" % _format_val(genes.get("petal_count", "?")))
+	lines.append("petal L/W: %s / %s" % [_format_val(genes.get("petal_length", "?")), _format_val(genes.get("petal_width", "?"))])
+	lines.append("flower size: %s" % _format_val(genes.get("flower_size", "?")))
+	lines.append("leaf: %s / %s" % [str(genes.get("leaf_shape", "?")), str(genes.get("leaf_edge", "?"))])
+	lines.append("pattern: %s | veins %s" % [str(genes.get("spot_pattern", "?")), _format_val(genes.get("vein_contrast", "?"))])
+	lines.append("glow_max: %s" % _format_val(genes.get("glow_max", "?")))
+	lines.append("toxic: %s | scent: %s" % [str(bool(genes.get("toxic", false))), str(genes.get("scent", "none"))])
+	lines.append("inv_glow_lock: %s" % str(bool(genes.get("inv_glow_lock", false))))
+	return "\n".join(lines)
+
+func genotype_card_multiline() -> String:
+	# Shows allele A | allele B → expressed
+	var lines: Array[String] = []
+	lines.append("GENOTYPE (diploid alleles)")
+	lines.append("Format: A | B  →  expressed")
+
+	# pick a nice stable ordering: CHR1 loci then CHR2 loci then anything else
+	var ordered_keys: Array[String] = []
+	for l in CHR1_LOCI:
+		ordered_keys.append(String(l["name"]))
+	for l in CHR2_LOCI:
+		ordered_keys.append(String(l["name"]))
+
+	# also include schema keys not in loci (if any)
+	for k in GENE_SCHEMA.keys():
+		var ks: String = String(k)
+		if not ordered_keys.has(ks):
+			ordered_keys.append(ks)
+
+	for key in ordered_keys:
+		var a_val = _get_allele_for_key(key, true)
+		var b_val = _get_allele_for_key(key, false)
+		var expr = genes.get(key, "?")
+
+		var het: bool = _is_hetero(a_val, b_val)
+		var mark: String = " *" if het else ""
+		lines.append("%s%s: %s | %s  →  %s" % [key, mark, _format_val(a_val), _format_val(b_val), _format_val(expr)])
+
+	lines.append("\n* = heterozygous (A != B)")
+	lines.append("\nDominance rules for enums:")
+	lines.append("leaf_shape: heart > lance > oval > round")
+	lines.append("leaf_edge: lobed > serrated > smooth")
+	lines.append("spot_pattern: ring > polka > freckle > none")
+	lines.append("scent: sharp > funk > sweet > none")
+	lines.append("\n(You can tweak DOMINANCE in cell.gd.)")
+	return "\n".join(lines)
+
+func _get_allele_for_key(key: String, take_a: bool):
+	# Routes key to the right chromosome dictionary.
+	# If missing, falls back to expressed gene.
+	var src: Dictionary
+
+	var is_chr1: bool = false
+	var is_chr2: bool = false
+
+	for l in CHR1_LOCI:
+		if String(l["name"]) == key:
+			is_chr1 = true
+			break
+	for l2 in CHR2_LOCI:
+		if String(l2["name"]) == key:
+			is_chr2 = true
+			break
+
+	if is_chr1:
+		src = chr1_a if take_a else chr1_b
+	elif is_chr2:
+		src = chr2_a if take_a else chr2_b
+	else:
+		return genes.get(key, "?")
+
+	return src.get(key, genes.get(key, "?"))
+
+# ------------------------------------------------------------
+# CHROMOSOME VISUALIZER TEXT (rails + distances)
+# ------------------------------------------------------------
+
+func chromosomes_visualizer_text() -> String:
+	var lines: Array[String] = []
+	lines.append("CHROMOSOMES (loci order + distances)")
+	lines.append("Legend: [A] top rail, [B] bottom rail, * heterozygous")
+	lines.append("Distances shown are Δpos in 0..1 space (not real cM, but useful linkage intuition).")
+	lines.append("")
+
+	lines.append(_chromosome_block("CHR1 (behavior)", CHR1_LOCI, chr1_a, chr1_b, null))
+	lines.append("")
+	lines.append(_chromosome_block("CHR2 (visual/chemistry)", CHR2_LOCI, chr2_a, chr2_b, INV_GLOW_LOCK))
+	return "\n".join(lines)
+
+func _chromosome_block(title: String, loci: Array, a: Dictionary, b: Dictionary, inv_span) -> String:
+	var out: Array[String] = []
+	out.append(title)
+
+	# Optional inversion shading line (CHR2)
+	if inv_span != null:
+		var s: float = float(inv_span["start"])
+		var e: float = float(inv_span["end"])
+		out.append("INV span: [%.2f .. %.2f] (suppresses crossovers when parents differ)" % [s, e])
+
+	# header
+	out.append("pos    Δpos   gene                  A allele        B allele        expr")
+	out.append("-----  -----  --------------------  ------------    ------------    ------------")
+
+	var prev_pos: float = 0.0
+	for i in range(loci.size()):
+		var loc: Dictionary = loci[i]
+		var name: String = String(loc["name"])
+		var pos: float = float(loc["pos"])
+		var dpos: float = pos - prev_pos
+		prev_pos = pos
+
+		var av = a.get(name, "?")
+		var bv = b.get(name, "?")
+		var expr = genes.get(name, "?")
+		var het: bool = _is_hetero(av, bv)
+		var mark: String = "*" if het else " "
+
+		# Inversion marker for loci inside span
+		var inv_mark: String = " "
+		if inv_span != null:
+			var s2: float = float(inv_span["start"])
+			var e2: float = float(inv_span["end"])
+			if pos >= s2 and pos <= e2:
+				inv_mark = "I"
+
+		out.append("%0.2f  %0.2f   %s%s   %-16s  %-12s      %-12s      %-12s" % [
+			pos,
+			dpos,
+			inv_mark,
+			mark,
+			name,
+			_format_val(av),
+			_format_val(bv),
+			_format_val(expr)
+		])
+
+	out.append("Marks: * heterozygous, I inside inversion span")
+	return "\n".join(out)
+
 
 # ============================================================
 # ID HELPERS
