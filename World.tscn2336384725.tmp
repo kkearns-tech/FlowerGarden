@@ -1,0 +1,62 @@
+[gd_scene load_steps=3 format=3 uid="uid://hdq57u2g47dx"]
+
+[ext_resource type="Script" uid="uid://d0nhl0c06ortq" path="res://world.gd" id="1_2dftf"]
+[ext_resource type="PackedScene" uid="uid://cnavw4k04chwx" path="res://cell.tscn" id="1_c6gwx"]
+
+[node name="World" type="Node2D"]
+script = ExtResource("1_2dftf")
+
+[node name="Cell3" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell7" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell6" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell9" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell8" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell10" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell5" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell11" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell4" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell12" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell2" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="Cell" parent="." instance=ExtResource("1_c6gwx")]
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Panel" type="PanelContainer" parent="UI"]
+offset_right = 247.0
+offset_bottom = 62.0
+
+[node name="VBox" type="VBoxContainer" parent="UI/Panel"]
+layout_mode = 2
+
+[node name="TopRow" type="HBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="Spawn10" type="Button" parent="UI/Panel/VBox/TopRow"]
+layout_mode = 2
+text = "Spawn 10"
+
+[node name="SecondRow" type="HBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+
+[node name="ShowGenetics" type="CheckButton" parent="UI/Panel/VBox/SecondRow"]
+layout_mode = 2
+text = "Show Genetics"
+
+[node name="Title" type="Label" parent="UI/Panel/VBox"]
+layout_mode = 2
+text = "Genetics Inspector"
+
+[node name="GeneticsText" type="RichTextLabel" parent="UI/Panel/VBox"]
+custom_minimum_size = Vector2(400, 400)
+layout_mode = 2
