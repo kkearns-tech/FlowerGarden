@@ -21,6 +21,7 @@ layout_mode = 2
 
 [node name="Spawn10" type="Button" parent="UI/Panel/VBox/TopRow"]
 layout_mode = 2
+size_flags_stretch_ratio = 2.43
 text = "Spawn 10"
 
 [node name="SecondRow" type="HBoxContainer" parent="UI/Panel/VBox"]
@@ -33,7 +34,7 @@ text = "Show Genetics"
 [node name="Title" type="Label" parent="UI/Panel/VBox"]
 layout_mode = 2
 text = "---------------------------
-Genetics Inspector"
+Phenotype  Inspector"
 
 [node name="GeneticsText" type="RichTextLabel" parent="UI/Panel/VBox"]
 custom_minimum_size = Vector2(250, 300)
