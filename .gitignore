@@ -5,3 +5,10 @@
 .export/
 .export_presets.cfg
 *.translation 
+
+# Godot export/build outputs
+exports/
+*.exe
+*.pck
+*.zip
+ 
