@@ -1,8 +1,3 @@
-Love this moment. This is where your plant genetics experiment stops being “my folder” and becomes **a world someone else can enter.** 🌿🧬✨
-
-Here’s a polished, GitHub-ready description you can paste into your README or Release notes.
-
----
 
 # 🌸 FlowerGarden
 
